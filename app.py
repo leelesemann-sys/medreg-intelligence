@@ -235,8 +235,8 @@ if db_ready:
             unique_files = sorted(list(set([m['source_document'] for m in content_data['metadatas'] if 'source_document' in m])))
             if unique_files:
                 st.session_state.processed_files = unique_files
-    except Exception:
-        pass
+    except Exception as e:
+        st.sidebar.caption(f"⚙️ Metadaten-Info: {type(e).__name__}")
 
     # Fallback: wenn keine Dateien aus Metadaten, zeige vorindexierte Dokumente
     if not st.session_state.processed_files:
@@ -248,6 +248,7 @@ if db_ready:
             "UK_MDR_2002_Conformity_Assessment_English.pdf",
             "Guidance_on_the_regulation_of_IVD_medical_devices_in_GB.pdf",
             "mdcg_2021-24_en_0.pdf",
+            "sor-98-282.pdf",
         ]
 else:
     vectorstore = None
