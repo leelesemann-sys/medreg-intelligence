@@ -167,7 +167,19 @@ with st.sidebar:
 # --- VORBERECHNETE WISSENSBASIS (Auto-Download) ---
 def ensure_default_db():
     """Lädt die vorberechnete ChromaDB von GitHub Releases, falls lokal nicht vorhanden."""
-    if os.path.exists(DB_DIR) and os.listdir(DB_DIR):
+    # Prüfe ob DB-Dateien (nicht nur ein Unterordner) vorhanden sind
+    if os.path.exists(DB_DIR) and any(f for f in os.listdir(DB_DIR) if not f.startswith('.')):
+        # Prüfe ob es ein verschachtelter Ordner ist (db_storage/db_storage/)
+        nested = os.path.join(DB_DIR, "db_storage")
+        if os.path.isdir(nested) and os.listdir(nested):
+            # Verschiebe Inhalt eine Ebene hoch
+            import shutil
+            for item in os.listdir(nested):
+                src = os.path.join(nested, item)
+                dst = os.path.join(DB_DIR, item)
+                if not os.path.exists(dst):
+                    shutil.move(src, dst)
+            shutil.rmtree(nested)
         return True
     try:
         zip_path = "db_storage.zip"
@@ -177,9 +189,28 @@ def ensure_default_db():
             with open(zip_path, "wb") as f:
                 for chunk in resp.iter_content(chunk_size=8192):
                     f.write(chunk)
+            # Extrahiere in temporären Ordner, dann richtig verschieben
+            tmp_dir = "db_tmp_extract"
             with zipfile.ZipFile(zip_path, "r") as z:
-                z.extractall(DB_DIR)
+                z.extractall(tmp_dir)
             os.remove(zip_path)
+
+            # Prüfe ob ZIP einen Unterordner db_storage/ enthält
+            extracted_items = os.listdir(tmp_dir)
+            if len(extracted_items) == 1 and os.path.isdir(os.path.join(tmp_dir, extracted_items[0])):
+                # ZIP enthält einen einzelnen Ordner -> dessen Inhalt ist die DB
+                import shutil
+                source_dir = os.path.join(tmp_dir, extracted_items[0])
+                if os.path.exists(DB_DIR):
+                    shutil.rmtree(DB_DIR)
+                shutil.move(source_dir, DB_DIR)
+                shutil.rmtree(tmp_dir)
+            else:
+                # ZIP enthält DB-Dateien direkt
+                import shutil
+                if os.path.exists(DB_DIR):
+                    shutil.rmtree(DB_DIR)
+                shutil.move(tmp_dir, DB_DIR)
         return True
     except Exception as e:
         st.warning(f"⚠️ Auto-Download fehlgeschlagen: {e}")
@@ -202,9 +233,22 @@ if db_ready:
         content_data = vectorstore.get(include=['metadatas'])
         if content_data['metadatas']:
             unique_files = sorted(list(set([m['source_document'] for m in content_data['metadatas'] if 'source_document' in m])))
-            st.session_state.processed_files = unique_files
+            if unique_files:
+                st.session_state.processed_files = unique_files
     except Exception:
         pass
+
+    # Fallback: wenn keine Dateien aus Metadaten, zeige vorindexierte Dokumente
+    if not st.session_state.processed_files:
+        st.session_state.processed_files = [
+            "CELEX_32017R0745_DE_TXT.pdf",
+            "DE_MedProdGesetz_2020_German.pdf",
+            "fedlex-data-admin-ch-eli-cc-2020-552-20231101-de-pdf-a-5.pdf",
+            "UK_MedDevReg_2002_English.pdf",
+            "UK_MDR_2002_Conformity_Assessment_English.pdf",
+            "Guidance_on_the_regulation_of_IVD_medical_devices_in_GB.pdf",
+            "mdcg_2021-24_en_0.pdf",
+        ]
 else:
     vectorstore = None
 
