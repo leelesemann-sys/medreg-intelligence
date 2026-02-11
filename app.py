@@ -142,12 +142,6 @@ with st.sidebar:
             mime="text/html"
         )
 
-    if st.button("Speicher komplett leeren"):
-        if os.path.exists(DB_DIR): shutil.rmtree(DB_DIR)
-        st.session_state.chat_history = []
-        st.session_state.processed_files = []
-        st.session_state.indexing_done = False
-        st.rerun()
 
 # --- VORBERECHNETE WISSENSBASIS (Auto-Download) ---
 def ensure_default_db():
