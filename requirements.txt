@@ -7,3 +7,4 @@ cohere
 pypdf
 python-dotenv
 tiktoken
+requests

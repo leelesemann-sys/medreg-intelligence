@@ -28,6 +28,10 @@ archive/
 ~$*
 ~WRL*
 
+# Temp-Dateien
+*.zip
+nul
+
 # OS
 .DS_Store
 Thumbs.db

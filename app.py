@@ -1,6 +1,8 @@
 import streamlit as st
 import os
 import shutil
+import zipfile
+import requests
 from datetime import datetime
 from dotenv import load_dotenv
 import cohere
@@ -20,6 +22,7 @@ from chunking import chunk_documents
 # --- KONFIGURATION ---
 load_dotenv()
 DB_DIR = "./db_storage"
+DB_ZIP_URL = "https://github.com/leelesemann-sys/medreg-intelligence/releases/download/v1.0.0/db_storage.zip"
 API_VERSION = "2024-08-01-preview"
 
 # Keys: .env (lokal) oder Streamlit Secrets (Cloud)
@@ -146,13 +149,37 @@ with st.sidebar:
         st.session_state.indexing_done = False
         st.rerun()
 
-# --- VEKTORDATENBANK & INHALTSANZEIGE ---
+# --- VORBERECHNETE WISSENSBASIS (Auto-Download) ---
+def ensure_default_db():
+    """Lädt die vorberechnete ChromaDB von GitHub Releases, falls lokal nicht vorhanden."""
+    if os.path.exists(DB_DIR) and os.listdir(DB_DIR):
+        return True
+    try:
+        zip_path = "db_storage.zip"
+        with st.spinner("📥 Lade vorberechnete Wissensbasis herunter..."):
+            resp = requests.get(DB_ZIP_URL, stream=True, timeout=60)
+            resp.raise_for_status()
+            with open(zip_path, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            with zipfile.ZipFile(zip_path, "r") as z:
+                z.extractall(DB_DIR)
+            os.remove(zip_path)
+        return True
+    except Exception as e:
+        st.warning(f"⚠️ Auto-Download fehlgeschlagen: {e}")
+        return False
+
+# --- VEKTORDATENBANK ---
 embeddings = AzureOpenAIEmbeddings(
     azure_deployment="text-embedding-3-small",
     openai_api_version=API_VERSION
 )
 
-if os.path.exists(DB_DIR) and os.listdir(DB_DIR):
+# 1. Versuche vorberechnete DB zu laden (oder herunterladen)
+db_ready = ensure_default_db()
+
+if db_ready:
     vectorstore = Chroma(persist_directory=DB_DIR, embedding_function=embeddings)
     st.session_state.indexing_done = True
 
@@ -170,10 +197,13 @@ if os.path.exists(DB_DIR) and os.listdir(DB_DIR):
 else:
     vectorstore = None
 
-# --- UPLOAD MIT STRUKTURBEWUSSTEM CHUNKING ---
-if not st.session_state.indexing_done:
-    uploaded_files = st.file_uploader("Gesetze hochladen (PDF):", type="pdf", accept_multiple_files=True)
-    if uploaded_files and (vectorstore is None or st.button("Indexierung starten")):
+# 2. Eigene Dokumente hochladen (zusätzlich oder als Fallback)
+with st.sidebar.expander("📂 Eigene Dokumente hochladen"):
+    uploaded_files = st.file_uploader("PDFs auswählen:", type="pdf", accept_multiple_files=True)
+    if uploaded_files and st.button("Eigene Dokumente indexieren"):
+        # Bestehende DB löschen und neu aufbauen
+        if os.path.exists(DB_DIR):
+            shutil.rmtree(DB_DIR)
         with st.spinner("Strukturbewusstes Chunking läuft..."):
             all_splits = chunk_documents(uploaded_files)
             st.info(f"✂️ {len(all_splits)} Chunks aus {len(uploaded_files)} Dokumenten erstellt")
