@@ -1,0 +1,33 @@
+# Sicherheit: Niemals Secrets hochladen
+.env
+
+# ChromaDB lokale Datenbank (wird beim Indexieren neu erstellt)
+db_storage/
+
+# Systemdateien & Python-Müll
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtuelle Umgebung (zu groß für GitHub)
+.venv/
+venv/
+env/
+
+# IDE Einstellungen
+.vscode/
+.idea/
+
+# Quelldaten (PDFs zu groß, werden nicht committed)
+data/
+
+# Alte Skripte / Archiv
+archive/
+
+# Word Temp-Dateien
+~$*
+~WRL*
+
+# OS
+.DS_Store
+Thumbs.db
