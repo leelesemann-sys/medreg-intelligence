@@ -191,13 +191,10 @@ if db_ready:
 else:
     vectorstore = None
 
-# 2. Eigene Dokumente hochladen (zusätzlich oder als Fallback)
-with st.sidebar.expander("📂 Eigene Dokumente hochladen"):
+# 2. Eigene Dokumente zusätzlich hochladen
+with st.sidebar.expander("📂 Eigene Dokumente hinzufügen"):
     uploaded_files = st.file_uploader("PDFs auswählen:", type="pdf", accept_multiple_files=True)
-    if uploaded_files and st.button("Eigene Dokumente indexieren"):
-        # Bestehende DB löschen und neu aufbauen
-        if os.path.exists(DB_DIR):
-            shutil.rmtree(DB_DIR)
+    if uploaded_files and st.button("Zur Wissensbasis hinzufügen"):
         with st.spinner("Strukturbewusstes Chunking läuft..."):
             all_splits = chunk_documents(uploaded_files)
             st.info(f"✂️ {len(all_splits)} Chunks aus {len(uploaded_files)} Dokumenten erstellt")
@@ -205,12 +202,11 @@ with st.sidebar.expander("📂 Eigene Dokumente hochladen"):
         batch_size = 50
         for i in range(0, len(all_splits), batch_size):
             batch = all_splits[i:i + batch_size]
-            if i == 0:
+            if vectorstore is None and i == 0:
                 vectorstore = Chroma.from_documents(documents=batch, embedding=embeddings, persist_directory=DB_DIR)
             else:
                 vectorstore.add_documents(batch)
             prog.progress(min((i + batch_size) / len(all_splits), 1.0))
-        st.session_state.processed_files = [f.name for f in uploaded_files]
         st.session_state.indexing_done = True
         st.rerun()
 
