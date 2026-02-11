@@ -1,11 +1,14 @@
 import streamlit as st
 import os
-import shutil
+import io
 import zipfile
 import requests
 from datetime import datetime
 from dotenv import load_dotenv
 import cohere
+from docx import Document as DocxDocument
+from docx.shared import Pt, Inches, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 # --- IMPORTS ---
 from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
@@ -60,6 +63,29 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("⚖️ MedReg Intelligence")
+
+# --- LESBARE DOKUMENTNAMEN ---
+FRIENDLY_NAMES = {
+    # Vorindexierte Dokumente
+    "CELEX_32017R0745_DE_TXT.pdf": "EU MDR (Verordnung 2017/745) – DE",
+    "CELEX_32017R0745_EN_TXT.pdf": "EU MDR (Regulation 2017/745) – EN",
+    "DE_MedProdGesetz_2020_German.pdf": "MPDG (Medizinprodukterecht-Durchführungsgesetz)",
+    "fedlex-data-admin-ch-eli-cc-2020-552-20231101-de-pdf-a-5.pdf": "MepV (Medizinprodukteverordnung, Schweiz)",
+    "UK_MDR_2002_Conformity_Assessment_English.pdf": "UK MDR 2002 – Conformity Assessment",
+    "UK_MedDevReg_2002_English.pdf": "UK MDR 2002 (Medical Devices Regulations)",
+    "mdcg_2021-24_en_0.pdf": "MDCG 2021-24 (Classification Guidance)",
+    "Guidance_on_the_regulation_of_IVD_medical_devices_in_GB.pdf": "UK IVD Guidance (MHRA)",
+    # Häufig hochgeladene Test-Dokumente
+    "0718 FDA 21 CFR 820.pdf": "FDA 21 CFR 820 (Quality System Regulation)",
+    "0718-fda-21-cfr-820.pdf": "FDA 21 CFR 820 (Quality System Regulation)",
+    "sor-98-282.pdf": "CMDR (Canadian Medical Devices Regulations)",
+    "CELEX_32017R0746_DE_TXT.pdf": "EU IVDR (Verordnung 2017/746) – DE",
+    "CELEX_32017R0746_EN_TXT.pdf": "EU IVDR (Regulation 2017/746) – EN",
+}
+
+def friendly_name(raw_name):
+    """Gibt einen lesbaren Namen zurück, oder den Originalnamen falls unbekannt."""
+    return FRIENDLY_NAMES.get(raw_name, raw_name)
 
 # --- ROBUSTER HTML EXPORT ---
 def generate_audit_html(history, files):
@@ -117,26 +143,21 @@ if "processed_files" not in st.session_state:
 if "indexing_done" not in st.session_state:
     st.session_state.indexing_done = False
 
-# --- UI ---
+# --- UI: SIDEBAR ---
 
 with st.sidebar:
     st.header("MedReg Intelligence")
-    if AZURE_API_KEY and AZURE_ENDPOINT:
-        st.success("🔑 Azure API verbunden")
-    else:
+
+    # API-Check (nur Fehler anzeigen, Erfolg ist selbstverständlich)
+    if not (AZURE_API_KEY and AZURE_ENDPOINT):
         st.error("⚠️ API Keys fehlen! Bitte .env oder Streamlit Secrets konfigurieren.")
         st.stop()
-    if reranker:
-        st.success("🎯 Cohere Reranker aktiv")
-    else:
-        st.warning("⚠️ Kein Cohere Key – Reranking deaktiviert")
 
     if st.session_state.chat_history:
         st.divider()
-        st.subheader("📄 Export & Audit")
         html_report = generate_audit_html(st.session_state.chat_history, st.session_state.processed_files)
         st.download_button(
-            label="Audit Trail herunterladen (HTML)",
+            label="📄 Audit Trail herunterladen",
             data=html_report,
             file_name=f"Audit_Report_{datetime.now().strftime('%Y%m%d_%H%M')}.html",
             mime="text/html"
@@ -181,56 +202,187 @@ if db_ready:
         content_data = vectorstore.get(include=['metadatas'])
         if content_data['metadatas']:
             unique_files = sorted(list(set([m['source_document'] for m in content_data['metadatas'] if 'source_document' in m])))
-            st.sidebar.success(f"✅ Wissensbasis geladen ({len(unique_files)} Dokumente)")
-            with st.sidebar.expander("Gelesene Dateien anzeigen"):
-                for f in unique_files:
-                    st.write(f"📄 {f}")
             st.session_state.processed_files = unique_files
-    except Exception as e:
-        st.sidebar.warning("Wissensbasis aktiv, Inhaltsliste konnte nicht geladen werden.")
+    except Exception:
+        pass
 else:
     vectorstore = None
 
-# 2. Eigene Dokumente zusätzlich hochladen
-with st.sidebar.expander("📂 Eigene Dokumente hinzufügen"):
-    uploaded_files = st.file_uploader("PDFs auswählen:", type="pdf", accept_multiple_files=True)
-    if uploaded_files and st.button("Zur Wissensbasis hinzufügen"):
-        with st.spinner("Strukturbewusstes Chunking läuft..."):
-            all_splits = chunk_documents(uploaded_files)
-            st.info(f"✂️ {len(all_splits)} Chunks aus {len(uploaded_files)} Dokumenten erstellt")
-        prog = st.progress(0, text="Indexiere Chunks...")
-        batch_size = 50
-        for i in range(0, len(all_splits), batch_size):
-            batch = all_splits[i:i + batch_size]
-            if vectorstore is None and i == 0:
-                vectorstore = Chroma.from_documents(documents=batch, embedding=embeddings, persist_directory=DB_DIR)
-            else:
-                vectorstore.add_documents(batch)
-            prog.progress(min((i + batch_size) / len(all_splits), 1.0))
-        st.session_state.indexing_done = True
-        st.rerun()
+# --- SIDEBAR: Wissensbasis-Info ---
+with st.sidebar:
+    st.divider()
 
-# --- COPY-BUTTON HELPER ---
-def copy_button(text, key):
-    """Erzeugt einen Copy-to-Clipboard Button via HTML/JS."""
-    import html as html_lib
-    escaped = html_lib.escape(text).replace("\n", "\\n").replace("'", "\\'")
-    st.markdown(f"""
-    <button onclick="navigator.clipboard.writeText('{escaped}');this.textContent='✅ Kopiert!';setTimeout(()=>this.textContent='📋 Kopieren',1500)"
-        style="background:none;border:1px solid #ddd;border-radius:5px;padding:4px 12px;cursor:pointer;font-size:0.8em;color:#666;margin-top:4px;">
-        📋 Kopieren
-    </button>
-    """, unsafe_allow_html=True)
+    # Dokumentenliste (immer sichtbar, lesbare Namen)
+    if st.session_state.processed_files:
+        st.markdown(f"**📚 Wissensbasis** ({len(st.session_state.processed_files)} Dokumente)")
+        for f in st.session_state.processed_files:
+            st.caption(f"• {friendly_name(f)}")
+    else:
+        st.info("Noch keine Dokumente geladen.")
+
+    # Erfolgsmeldung nach Upload (bleibt bis nächster Rerun)
+    if "upload_success" in st.session_state and st.session_state.upload_success:
+        st.success(st.session_state.upload_success)
+        st.session_state.upload_success = None
+
+    st.divider()
+
+    # --- Upload: Eigene Dokumente ---
+    st.markdown("**📂 Eigene Dokumente hinzufügen**")
+    st.caption("PDFs hochladen — sie werden automatisch analysiert und zur Wissensbasis hinzugefügt.")
+    uploaded_files = st.file_uploader(
+        "PDFs auswählen",
+        type="pdf",
+        accept_multiple_files=True,
+        label_visibility="collapsed"
+    )
+
+    if uploaded_files:
+        # Track welche Dateien schon verarbeitet wurden
+        if "already_indexed_files" not in st.session_state:
+            st.session_state.already_indexed_files = set()
+
+        new_files = [f for f in uploaded_files if f.name not in st.session_state.already_indexed_files]
+
+        if new_files:
+            st.info(f"📄 {len(new_files)} neue Datei(en) erkannt. Verarbeitung startet...")
+
+            with st.spinner("Schritt 1/2: Dokumente werden analysiert und in Abschnitte aufgeteilt..."):
+                all_splits = chunk_documents(new_files)
+
+            st.info(f"✂️ {len(all_splits)} Textabschnitte erstellt. Indexierung läuft...")
+
+            prog = st.progress(0, text="Schritt 2/2: Textabschnitte werden indexiert...")
+            batch_size = 50
+            for i in range(0, len(all_splits), batch_size):
+                batch = all_splits[i:i + batch_size]
+                if vectorstore is None and i == 0:
+                    vectorstore = Chroma.from_documents(documents=batch, embedding=embeddings, persist_directory=DB_DIR)
+                else:
+                    vectorstore.add_documents(batch)
+                prog.progress(min((i + batch_size) / len(all_splits), 1.0))
+
+            # Merke verarbeitete Dateien
+            for f in new_files:
+                st.session_state.already_indexed_files.add(f.name)
+
+            st.session_state.indexing_done = True
+            file_names = ", ".join([f.name for f in new_files])
+            st.session_state.upload_success = f"✅ Fertig! {len(new_files)} Dokument(e) hinzugefügt: {file_names}"
+            st.rerun()
+        else:
+            st.caption("✅ Alle hochgeladenen Dateien sind bereits in der Wissensbasis.")
+
+# --- EXPORT-HELFER ---
+def generate_answer_docx(question, answer):
+    """Erzeugt ein Word-Dokument mit Frage und Antwort."""
+    doc = DocxDocument()
+
+    # Titel
+    title = doc.add_heading("MedReg Intelligence — Analyse", level=1)
+    title.runs[0].font.color.rgb = RGBColor(26, 58, 92)
+
+    # Zeitstempel
+    doc.add_paragraph(f"Erstellt: {datetime.now().strftime('%d.%m.%Y %H:%M')}", style="Intense Quote")
+
+    # Frage
+    doc.add_heading("Frage", level=2)
+    doc.add_paragraph(question)
+
+    # Antwort
+    doc.add_heading("Antwort", level=2)
+    for line in answer.split("\n"):
+        if line.startswith("| "):
+            # Tabellenzeilen als Text (Word-Tabellen aus Markdown wären zu komplex)
+            p = doc.add_paragraph(line)
+            p.style.font.size = Pt(9)
+            p.style.font.name = "Consolas"
+        elif line.startswith("# ") or line.startswith("## ") or line.startswith("### "):
+            clean = line.lstrip("# ").strip()
+            doc.add_heading(clean, level=3)
+        elif line.startswith("- ") or line.startswith("* "):
+            doc.add_paragraph(line[2:], style="List Bullet")
+        elif line.strip():
+            # Fettdruck erkennen: **text**
+            p = doc.add_paragraph()
+            parts = line.split("**")
+            for i, part in enumerate(parts):
+                if part:
+                    run = p.add_run(part)
+                    if i % 2 == 1:  # ungerade = fett
+                        run.bold = True
+        else:
+            doc.add_paragraph()  # Leerzeile
+
+    # Footer
+    doc.add_paragraph()
+    footer = doc.add_paragraph("Erstellt mit MedReg Intelligence — Lesemann AI Solutions & Consulting")
+    footer.runs[0].font.size = Pt(8)
+    footer.runs[0].font.color.rgb = RGBColor(128, 128, 128)
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf
+
+def answer_export_buttons(text, question, key):
+    """Zeigt Export-Optionen für eine Antwort: Word-Download + kopierbarer Text."""
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        docx_buf = generate_answer_docx(question, text)
+        st.download_button(
+            label="📥 Als Word speichern",
+            data=docx_buf,
+            file_name=f"MedReg_Analyse_{datetime.now().strftime('%Y%m%d_%H%M')}.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            key=f"docx_{key}"
+        )
+    with col2:
+        with st.popover("📋 Text kopieren"):
+            st.code(text, language=None)
+
+# --- WILLKOMMENS-BEREICH ---
+if vectorstore and not st.session_state.chat_history:
+    st.markdown("""
+    Willkommen! Dieses Tool beantwortet Ihre Fragen zu **Medizinprodukte-Regulierung**
+    auf Basis der tatsächlichen Gesetzestexte — mit exakten Quellenangaben.
+
+    **Enthaltene Gesetze:** EU MDR, MPDG (DE), MepV (CH), UK MDR 2002
+
+    ---
+    **Beispielfragen zum Einstieg:**
+    """)
+
+    example_questions = [
+        "Welche Anforderungen stellt die EU MDR an die klinische Bewertung von Medizinprodukten?",
+        "Vergleiche die Klassifizierungsregeln für Medizinprodukte in der EU und UK.",
+        "Was regelt das MPDG im Vergleich zur EU MDR?",
+        "Welche Pflichten haben Wirtschaftsakteure nach der MepV (Schweiz)?",
+    ]
+
+    for q in example_questions:
+        if st.button(f"💬 {q}", key=f"example_{hash(q)}", use_container_width=True):
+            st.session_state.pending_question = q
+            st.rerun()
 
 # --- CHAT MIT RERANKING-LOGIK ---
 if vectorstore:
-    for message in st.session_state.chat_history:
+    last_question = ""
+    for i, message in enumerate(st.session_state.chat_history):
+        if message.type == "human":
+            last_question = message.content
         with st.chat_message(message.type):
             st.markdown(message.content)
             if message.type == "ai":
-                copy_button(message.content, f"copy_{id(message)}")
+                answer_export_buttons(message.content, last_question, f"hist_{i}")
 
-    if prompt := st.chat_input("Ihre regulatorische Frage..."):
+    # Eingabe: entweder aus Chat-Input oder aus Beispielfrage
+    prompt = st.chat_input("Ihre regulatorische Frage...")
+    if not prompt and "pending_question" in st.session_state:
+        prompt = st.session_state.pending_question
+        del st.session_state.pending_question
+
+    if prompt:
         st.session_state.chat_history.append(HumanMessage(content=prompt))
         with st.chat_message("user"): st.markdown(prompt)
 
@@ -280,6 +432,6 @@ Regeln:
 
             # 3. Stream & Store
             full_res = st.write_stream(chain.stream({"input": prompt, "context": context, "chat_history": st.session_state.chat_history[:-1]}))
-            copy_button(full_res, "copy_latest")
+            answer_export_buttons(full_res, prompt, "latest")
             st.session_state.chat_history.append(AIMessage(content=full_res))
             st.rerun()

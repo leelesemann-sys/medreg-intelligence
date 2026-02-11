@@ -8,3 +8,4 @@ pypdf
 python-dotenv
 tiktoken
 requests
+python-docx
